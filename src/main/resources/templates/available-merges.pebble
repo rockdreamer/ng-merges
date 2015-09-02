@@ -1,0 +1,8 @@
+{% extends "base.pebble" %}
+
+{% block title %}{{ websiteTitle }}{% endblock %}
+
+{% block content %}
+
+	<p> {{ content }}</p>
+{% endblock %}
