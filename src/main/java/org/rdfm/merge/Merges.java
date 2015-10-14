@@ -3,14 +3,19 @@ package org.rdfm.merge; /**
  */
 
 import com.google.gson.Gson;
+import com.google.gson.GsonBuilder;
 import org.rdfm.merge.singletreemerge.ProjectMerges;
 import org.rdfm.merge.singletreemerge.SingleTreeMergeProject;
+import org.tmatesoft.svn.core.SVNURL;
 import org.tmatesoft.svn.core.auth.ISVNAuthenticationManager;
+import org.tmatesoft.svn.core.wc.SVNRevision;
 import org.tmatesoft.svn.core.wc.SVNWCUtil;
 import spark.ModelAndView;
 
 import java.io.BufferedReader;
+import java.io.File;
 import java.io.InputStreamReader;
+import java.lang.reflect.Modifier;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.Map;
@@ -22,7 +27,14 @@ public class Merges {
     public static void main(String[] args) {
 
         staticFileLocation("/public"); // Static files
-        Gson gson = new Gson();
+        Gson gson = new GsonBuilder()
+                .setPrettyPrinting()
+                .registerTypeHierarchyAdapter(Throwable.class, new ExceptionSerializer())
+                .registerTypeHierarchyAdapter(File.class, new FileDeSerializer())
+                .registerTypeHierarchyAdapter(SVNURL.class, new SVNUrlSerializer())
+                .registerTypeHierarchyAdapter(SVNRevision.class, new SVNRevisionSerializer())
+                .excludeFieldsWithModifiers(Modifier.STATIC, Modifier.TRANSIENT, Modifier.VOLATILE)
+                .create();
 
         ISVNAuthenticationManager authManager =
                 SVNWCUtil.createDefaultAuthenticationManager("bantaloukasc", "tff-build".toCharArray());
@@ -31,10 +43,12 @@ public class Merges {
                 ClassLoader.getSystemResourceAsStream("projects.json"))), SingleTreeMergeProject[].class);
 
         get("/singleTreeMergeProjects", (request, response) -> {
+            response.type("text/javascript");
             return singleTreeMergeProjects;
         }, gson::toJson);
 
         get("/project-merges/:name", (request, response) -> {
+            response.type("text/javascript");
             for (SingleTreeMergeProject p : singleTreeMergeProjects) {
                 if (p.getName().equals(request.params(":name"))) {
                     ProjectMerges projectMerge = new ProjectMerges();
@@ -47,6 +61,7 @@ public class Merges {
         }, gson::toJson);
 
         get("/project-merges", (request, response) -> {
+            response.type("text/javascript");
             ArrayList<ProjectMerges> projectMerges = new ArrayList<ProjectMerges>();
             for (SingleTreeMergeProject p : singleTreeMergeProjects) {
                 ProjectMerges projectMerge = new ProjectMerges();

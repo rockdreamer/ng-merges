@@ -5,8 +5,10 @@ import com.google.gson.GsonBuilder;
 import com.google.gson.reflect.TypeToken;
 import org.rdfm.merge.ExceptionSerializer;
 import org.rdfm.merge.FileDeSerializer;
+import org.rdfm.merge.SVNRevisionSerializer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.tmatesoft.svn.core.wc.SVNRevision;
 
 import java.io.BufferedReader;
 import java.io.File;
@@ -28,6 +30,7 @@ public class MultiTreeMergeProjects implements Map<String, MultiTreeMergeProject
     public void loadAllFromJson() throws IOException {
         Gson gson = new GsonBuilder()
                 .setPrettyPrinting()
+                .registerTypeHierarchyAdapter(SVNRevision.class, new SVNRevisionSerializer())
                 .registerTypeHierarchyAdapter(Throwable.class, new ExceptionSerializer())
                 .registerTypeHierarchyAdapter(File.class, new FileDeSerializer())
                 .create();

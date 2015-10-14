@@ -6,6 +6,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.tmatesoft.svn.core.*;
 import org.tmatesoft.svn.core.wc.SVNClientManager;
+import org.tmatesoft.svn.core.wc.SVNCopySource;
 import org.tmatesoft.svn.core.wc.SVNRevision;
 
 import java.beans.Transient;
@@ -13,6 +14,8 @@ import java.io.File;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  * Created by bantaloukasc on 27/08/15.
@@ -32,7 +35,12 @@ public class BranchHistoryMapping {
     String trunkHistoryMappingId;
     transient BranchHistoryMapping trunkHistoryMapping;
     SVNRevision startRevision;
-    transient CommitMappingList commitMappingList;
+    transient CommitMappingList commitMappingList=new CommitMappingList();
+
+    transient CommitMappings commitMappings;
+
+    transient Pattern p1 = Pattern.compile("^merge r(\\d+) (\\S+)");
+    transient Pattern p2 = Pattern.compile("^Merged revision\\(s\\) (\\d+)");
 
     @Transient
     public Repository getSourceRepository() {
@@ -105,6 +113,12 @@ public class BranchHistoryMapping {
             }
         }
         commitMappingList = project.getCommitMappings().get(name);
+        if (commitMappingList==null){
+            commitMappingList = new CommitMappingList();
+            commitMappingList.setBranchHistoryMappingName(name);
+            project.getCommitMappings().put(name,commitMappingList);
+        }
+        commitMappings = project.getCommitMappings();
 
     }
 
@@ -199,10 +213,11 @@ public class BranchHistoryMapping {
             targetRepository.doCommit(logEntry.getMessage()
                     + "\n\nOriginal commit r" + logEntry.getRevision()
                     + " in " + getName()
-                    + " by " + logEntry.getAuthor());
+                    + " by " + logEntry.getAuthor(),
+                    logEntry.getAuthor());
             log.info("Committed {} on repo", getTargetUrl());
 
-            targetRepository.updateAndCleanWc();
+            targetRepository.updateWc();
             SVNRevision currentRevision = targetRepository.getCurrentWcRevision();
 
             log.info("Current WC revision: {}", currentRevision);
@@ -212,6 +227,210 @@ public class BranchHistoryMapping {
             commitMappingList.getCommitMappings().add(commitMapping);
         }
 
+    }
+    public void doBranchUpdate() throws SVNException, BadCommandException {
+        if (!hasParent()) {
+            throw new BadCommandException("Cannot do branch update for project without parent...");
+        }
+        SVNClientManager ourClientManager = SVNClientManager.newInstance();
+        ourClientManager.setAuthenticationManager(targetRepository.getAuthManager());
+        targetRepository.updateAndCleanWc();
+
+        SVNRevision currentRevision = targetRepository.getCurrentWcRevision();
+        log.info("Current WC revision: {}", currentRevision);
+
+        File destinationPath = new File(targetRepository.getWcPath(), getTargetRelativePath());
+        List<SVNLogEntry> sortedLogEntries = getBranchSortedLogEntries();
+        log.debug("Source Branch entries: {}", sortedLogEntries);
+        for (SVNLogEntry entry: sortedLogEntries){
+            if (!destinationPath.exists()){
+                setStartRevision(SVNRevision.create(entry.getRevision()));
+                if (entry.getChangedPaths().size()!=1){
+                    log.error("First branch is not copy!");
+                    throw new BadCommandException("First branch commit is not copy");
+                }
+                SVNLogEntryPath logEntryPath = entry.getChangedPaths().values().iterator().next();
+                SVNRevision copyRevision = SVNRevision.create(logEntryPath.getCopyRevision());
+                SVNRevision newCopyRevision = getTrunkHistoryMapping().getCommitMappingList().getTargetRevision(copyRevision);
+
+                String message = String.format("%s\n\n Original revision r%d copy of r%d from repository %s, path %s",
+                        entry.getMessage(),
+                        entry.getRevision(), logEntryPath.getCopyRevision(),
+                        getTrunkHistoryMappingId(), logEntryPath.getCopyPath());
+                ourClientManager.getCopyClient().doCopy(new SVNCopySource[]{
+                        new SVNCopySource(newCopyRevision,newCopyRevision,getTrunkHistoryMapping().getTargetUrl())
+                },
+                        getTargetUrl(),
+                        false,
+                        true,
+                        true,
+                        message,
+                        null);
+                log.info("Copy revision is {} -> {}", copyRevision, newCopyRevision);
+                targetRepository.updateWc();
+                currentRevision = targetRepository.getCurrentWcRevision();
+
+                log.info("Current WC revision: {}", currentRevision);
+                SingleCommitMapping commitMapping = new SingleCommitMapping();
+                commitMapping.setSourceRevision(SVNRevision.create(entry.getRevision()));
+                commitMapping.setTargetRevision(currentRevision);
+                commitMappingList.getCommitMappings().add(commitMapping);
+            } else {
+                if (commitMappingList.getExactTargetRevision(SVNRevision.create(entry.getRevision()))!=null){
+                    log.info("Skipping altready merged {} revision {}", getSourceRepositoryId(), entry.getRevision());
+                    continue;
+                }
+                currentRevision = targetRepository.getCurrentWcRevision();
+                SVNRevision targetRevision = commitMappingList.getTargetRevision(SVNRevision.create(entry.getRevision()));
+                log.info("Merging {} revision {} to {} source URL:{} destinationPath:{}", getSourceRepositoryId(), entry.getRevision(),
+                        getTargetRepositoryId(), getSourceUrl(), destinationPath);
+                targetRepository.getClientManager().getDiffClient().doMerge(
+                        getSourceUrl(),
+                        SVNRevision.create(entry.getRevision() - 1),
+                        getSourceUrl(),
+                        SVNRevision.create(entry.getRevision()),
+                        destinationPath,
+                        SVNDepth.INFINITY,
+                        false, // no ancestry
+                        false,
+                        false,
+                        false
+                );
+                log.info("Merged files of revision {} from {} to {}", entry.getRevision(), getSourceUrl(), getTargetRelativePath());
+
+                for (Map.Entry<String, SVNLogEntryPath> logEntryPathEntry : entry.getChangedPaths().entrySet()) {
+                    if (logEntryPathEntry.getValue().getType() == SVNLogEntryPath.TYPE_DELETED) {
+                        log.info("deleted {}", logEntryPathEntry.getKey());
+                    }
+                }
+                Matcher m1 = p1.matcher(entry.getMessage());
+                Matcher m2 = p2.matcher(entry.getMessage());
+                Long sourceTrunkRevision=null;
+                String originalAuthor=null;
+                if (m1.find()){
+                    sourceTrunkRevision = Long.decode(m1.group(1));
+                    originalAuthor = m1.group(2);
+                }
+                if (m2.find()){
+                    sourceTrunkRevision = Long.decode(m2.group(1));
+                }
+                CommitMappingList trunkMappings= getTrunkHistoryMapping().getCommitMappingList();
+                SVNRevision targetTrunkRevision= null;
+                if (sourceTrunkRevision!=null){
+                    targetTrunkRevision = trunkMappings.getExactTargetRevision(SVNRevision.create(sourceTrunkRevision));
+                }
+
+                log.info("merging ancestry: source trunk revision is {}, in target {}",sourceTrunkRevision, targetTrunkRevision);
+                if (targetTrunkRevision!=null){
+                    targetRepository.getClientManager().getDiffClient().doMerge(
+                            getTrunkHistoryMapping().getTargetUrl(),
+                            SVNRevision.create(targetTrunkRevision.getNumber() - 1),
+                            getTrunkHistoryMapping().getTargetUrl(),
+                            SVNRevision.create(targetTrunkRevision.getNumber()),
+                            destinationPath,
+                            SVNDepth.INFINITY,
+                            true,
+                            false,
+                            false,
+                            true
+                    );
+                }
+                String message = entry.getMessage() +"\n\n"
+                        + "Original commit r"+entry.getRevision()
+                        + " in " + getName()
+                        + " by " + entry.getAuthor();
+                if (targetTrunkRevision!=null) {
+                    message = message +"\n"
+                            + "mapped to target trunk revision " + targetTrunkRevision.toString();
+                }
+
+                if (originalAuthor!=null) {
+                    targetRepository.doCommit(message, originalAuthor);
+                    log.info("Committed {} on repo as {}", getTargetUrl(), originalAuthor);
+                } else {
+                    targetRepository.doCommit(message, entry.getAuthor());
+                    log.info("Committed {} on repo as {}", getTargetUrl(), entry.getAuthor());
+                }
+
+                targetRepository.updateWc();
+                currentRevision = targetRepository.getCurrentWcRevision();
+
+                log.info("Current WC revision: {}", currentRevision);
+                SingleCommitMapping commitMapping = new SingleCommitMapping();
+                commitMapping.setSourceRevision(SVNRevision.create(entry.getRevision()));
+                commitMapping.setTargetRevision(currentRevision);
+                commitMappingList.getCommitMappings().add(commitMapping);
+            }
+        }
+
+    }
+
+    public void something() throws SVNException, BadCommandException {
+        SVNClientManager ourClientManager = SVNClientManager.newInstance();
+        ourClientManager.setAuthenticationManager(targetRepository.getAuthManager());
+        targetRepository.updateAndCleanWc();
+        SVNRevision currentRevision = targetRepository.getCurrentWcRevision();
+
+
+        File destinationPath = new File(targetRepository.getWcPath(), getTargetRelativePath());
+        if (!destinationPath.exists()) {
+            log.info("missing target directory {}", destinationPath);
+
+        } else {
+            log.info("{} already present on repo directory {}", getSourceUrl(), destinationPath);
+            destinationPath = new File(targetRepository.getWcPath(), getTargetRelativePath());
+        }
+
+        //
+
+
+        SVNRevision sourceFromRevision = startRevision;
+        for (SingleCommitMapping mapping : commitMappingList.getCommitMappings()) {
+            if (mapping.getSourceRevision().getNumber() > sourceFromRevision.getNumber()) {
+                sourceFromRevision = mapping.getSourceRevision();
+            }
+        }
+        log.info("Update of {} starts with remote revision {}", getTargetUrl(), sourceFromRevision);
+        destinationPath = new File(targetRepository.getWcPath(), getTargetRelativePath());
+
+        List<SVNLogEntry> sortedLogEntries = getSourceSortedLogEntries(sourceFromRevision, SVNRevision.HEAD);
+        for (SVNLogEntry logEntry : sortedLogEntries) {
+            targetRepository.getClientManager().getDiffClient().doMerge(
+                    getSourceUrl(),
+                    SVNRevision.create(logEntry.getRevision() - 1),
+                    getSourceUrl(),
+                    SVNRevision.create(logEntry.getRevision()),
+                    destinationPath,
+                    SVNDepth.INFINITY,
+                    false, // no ancestry
+                    false,
+                    false,
+                    false
+            );
+            log.info("Merged revision {} from {} to {}", logEntry.getRevision(), getSourceUrl(), getTargetRelativePath());
+
+            for (Map.Entry<String, SVNLogEntryPath> logEntryPathEntry : logEntry.getChangedPaths().entrySet()) {
+                if (logEntryPathEntry.getValue().getType() == SVNLogEntryPath.TYPE_DELETED) {
+                    log.info("deleted {}", logEntryPathEntry.getKey());
+                }
+            }
+
+            targetRepository.doCommit(logEntry.getMessage()
+                            + "\n\nOriginal commit r" + logEntry.getRevision()
+                            + " in " + getName()
+                            + " by " + logEntry.getAuthor(),
+                    logEntry.getAuthor());
+            log.info("Committed {} on repo", getTargetUrl());
+
+            targetRepository.updateWc();
+            currentRevision = targetRepository.getCurrentWcRevision();
+
+            log.info("Current WC revision: {}", currentRevision);
+            SingleCommitMapping commitMapping = new SingleCommitMapping();
+            commitMapping.setSourceRevision(SVNRevision.create(logEntry.getRevision()));
+            commitMapping.setTargetRevision(currentRevision);
+            commitMappingList.getCommitMappings().add(commitMapping);
+        }
     }
 
     public boolean hasParent() {
@@ -294,4 +513,25 @@ public class BranchHistoryMapping {
         this.targetRelativePath = targetRelativePath;
     }
 
+    public List<SVNLogEntry> getBranchSortedLogEntries() throws SVNException {
+        ArrayList < SVNLogEntry > sortedLogEntries = new ArrayList<>();
+        final ArrayList<SVNLogEntry> logEntries = new ArrayList<>();
+        sourceRepository.getClientManager().getLogClient().doLog(
+                getSourceUrl(),
+                new String[]{""},
+                null, // no peg
+                SVNRevision.create(0),
+                SVNRevision.HEAD,
+                true,
+                true,
+                0,
+                svnLogEntry -> logEntries.add(svnLogEntry)
+        );
+
+        logEntries.stream().sorted((e1, e2) -> Long.compare(e1.getRevision(), e2.getRevision()))
+                .forEach(e -> sortedLogEntries.add(e));
+        log.info("Found {} commits in {}", sortedLogEntries.size(), targetRelativePath);
+        return sortedLogEntries;
+
+    }
 }

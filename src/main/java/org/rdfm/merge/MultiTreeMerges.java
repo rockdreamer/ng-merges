@@ -17,6 +17,7 @@ import java.lang.reflect.Modifier;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.stream.Collectors;
 
 import static spark.Spark.get;
 import static spark.SparkBase.staticFileLocation;
@@ -30,6 +31,8 @@ public class MultiTreeMerges {
                 .setPrettyPrinting()
                 .registerTypeHierarchyAdapter(Throwable.class, new ExceptionSerializer())
                 .registerTypeHierarchyAdapter(File.class, new FileDeSerializer())
+                .registerTypeHierarchyAdapter(SVNURL.class, new SVNUrlSerializer())
+                .registerTypeHierarchyAdapter(SVNRevision.class, new SVNRevisionSerializer())
                 .excludeFieldsWithModifiers(Modifier.STATIC, Modifier.TRANSIENT, Modifier.VOLATILE)
                 .create();
 
@@ -76,7 +79,9 @@ public class MultiTreeMerges {
 
         staticFileLocation("/public"); // Static files
 
-        get("/repository", (request, response) -> {
+        get("/repositories/", (request, response) -> {
+            //for development only
+            response.header("Access-Control-Allow-Origin", "*");
             response.type("text/javascript");
             return repositories;
         }, gson::toJson);
@@ -108,11 +113,7 @@ public class MultiTreeMerges {
 
     }
 
-    private static ArrayList<TrunkMergeStatus> updateTrunk(MultiTreeMergeProject project) {
-        if (!initializeProject(project)) {
-            return null;
-        }
-
+    public static ArrayList<TrunkMergeStatus> updateTrunk(MultiTreeMergeProject project) {
         ArrayList<TrunkMergeStatus> statuses = new ArrayList<>();
         Repository targetRepository = project.getRepositoryMap().get(project.getTargetRepositoryId());
         if (targetRepository == null) {
@@ -159,11 +160,7 @@ public class MultiTreeMerges {
         return status;
     }
 
-    private static ArrayList<TrunkMergeStatus> importTrunks(MultiTreeMergeProject project) {
-        if (!initializeProject(project)) {
-            return null;
-        }
-
+    public static ArrayList<TrunkMergeStatus> importTrunks(MultiTreeMergeProject project) {
         ArrayList<TrunkMergeStatus> statuses = new ArrayList<>();
         Repository targetRepository = project.getRepositoryMap().get(project.getTargetRepositoryId());
         if (targetRepository == null) {
@@ -211,45 +208,34 @@ public class MultiTreeMerges {
         return status;
     }
 
-    private static boolean initializeProject(MultiTreeMergeProject project) {
-/*
-//        project.setName("tfj-all");
-//        project.setWcPath(new File("/home/bantaloukasc/Projects/mergione/wc/"));
-//        try {
-//            project.setBaseTargetUrl(SVNURL.parseURIEncoded("http://svn-rm.int.master.lan/svn/test-tfj/tfj-all/"));
-//        } catch (SVNException e) {
-//            log.error("Bad base target url for project {}", project.getName(),e);
-//            return false;
-//        }
-
-//        project.setTrunkHistoryMappings(new HashMap<>());
-*/
-
-        project.setBranchHistoryMappings(new HashMap<>());
-
-        BranchHistoryMapping tfjcoretrunk = new BranchHistoryMapping();
-        tfjcoretrunk.setName("tfj-core-1.11");
-        try {
-            tfjcoretrunk.setSourceUrl(SVNURL.parseURIEncoded("http://svn-rm.int.master.lan/svn/tfj-platform/branch/tfj-core-1.11"));
-        } catch (SVNException e) {
-            log.error("Bad source url for branch mapping {}", tfjcoretrunk.getName(), e);
-            return false;
+    public static ArrayList<TrunkMergeStatus> mergeBranches(MultiTreeMergeProject project) {
+        ArrayList<TrunkMergeStatus> statuses = new ArrayList<>();
+        Repository targetRepository = project.getRepositoryMap().get(project.getTargetRepositoryId());
+        if (targetRepository == null) {
+            return null;
         }
-        try {
-            tfjcoretrunk.setTargetUrl(SVNURL.parseURIEncoded("http://svn-rm.int.master.lan/svn/test-tfj/tfj-all/branches/tfj-all-1.11/tfj-core"));
-        } catch (SVNException e) {
-            log.error("Bad target url for branch mapping {}", tfjcoretrunk.getName(), e);
-            return false;
-        }
-        tfjcoretrunk.setStartRevision(SVNRevision.create(5514));
-        tfjcoretrunk.setTargetRelativePath("branches/tfj-all-1.11/tfj-core");
-        tfjcoretrunk.setTrunkHistoryMappingId("tfj-core-trunk");
+        statuses.addAll(project.getBranchHistoryMappings().entrySet().stream().map(
+                subProject -> importSubProjectBranch(project, subProject.getValue()))
+                .collect(Collectors.toList()));
 
-        project.getBranchHistoryMappings().put(
-                "tfj-core-1.11", tfjcoretrunk
-        );
-
-        return true;
+        return statuses;
     }
 
+    private static TrunkMergeStatus importSubProjectBranch(MultiTreeMergeProject project, BranchHistoryMapping subProjectTrunk) {
+        TrunkMergeStatus status = new TrunkMergeStatus();
+        status.setProject(project);
+        status.setMapping(subProjectTrunk);
+        status.setOk(true);
+
+        try {
+            project.doImportOfBranch(subProjectTrunk.getName());
+        } catch (SVNException | BadCommandException e) {
+            log.error("Error doing import of {}", subProjectTrunk.getName(), e);
+            status.setOk(false);
+            status.setException(e);
+            status.setError("Branch Import Error");
+            return status;
+        }
+        return status;
+    }
 }

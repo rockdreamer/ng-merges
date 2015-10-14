@@ -1,5 +1,6 @@
 package org.rdfm.merge.treemerge;
 
+import com.google.gson.annotations.SerializedName;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.tmatesoft.svn.core.SVNDepth;
@@ -25,7 +26,11 @@ public class Repository {
     transient ISVNAuthenticationManager authManager;
     String username;
     String password;
+
+    @SerializedName("baseUrl")
     SVNURL baseUrl;
+
+
     File wcPath;
     transient SVNClientManager clientManager;
 
@@ -55,6 +60,27 @@ public class Repository {
             return getClientManager().getWCClient().doInfo(getWcPath(), SVNRevision.HEAD).getRevision();
         } catch (SVNException e) {
             return null;
+        }
+    }
+
+    public void recreateEmptyLocalRepository() {
+        if (!"file".equals(getBaseUrl().getProtocol())){
+            log.error("bad boi, cannot delete remote repo");
+            return;
+        }
+        File local = new File(getBaseUrl().getPath());
+        try {
+            log.info("deleting repo {}",local);
+            deleteRecursive(local);
+            log.info("Deleted repo {}", local);
+        } catch (FileNotFoundException e) {
+            log.info("repo {} is not around, good", local);
+        }
+        try {
+            getClientManager().getAdminClient().doCreateRepository(
+                    local,null,true,false,false,false,false);
+        } catch (SVNException e){
+            log.error("Error creating {}",local, e);
         }
     }
 
@@ -165,7 +191,20 @@ public class Repository {
                 SVNDepth.INFINITY
         );
         log.info("Committed on repo {}", getId());
+    }
 
+    public void doCommit(String message, String author) throws SVNException {
+        getClientManager(author).getCommitClient().doCommit(
+                new File[]{getWcPath()},
+                false,
+                message,
+                null,
+                null,
+                false,
+                false,
+                SVNDepth.INFINITY
+        );
+        log.info("Committed on repo {} as {}", getId(), author);
     }
 
     @Transient
@@ -177,4 +216,25 @@ public class Repository {
         clientManager.setAuthenticationManager(getAuthManager());
         return clientManager;
     }
+
+    @Transient
+    public SVNClientManager getClientManager(String author) {
+        SVNClientManager localClientManager = SVNClientManager.newInstance();
+        ISVNAuthenticationManager localAuthManager =
+                SVNWCUtil.createDefaultAuthenticationManager(author, "".toCharArray());
+
+        localClientManager.setAuthenticationManager(localAuthManager);
+        return localClientManager;
+    }
+
+    public void updateWc() throws SVNException {
+        getClientManager().getUpdateClient().doUpdate(
+                getWcPath(),
+                SVNRevision.HEAD,
+                SVNDepth.INFINITY,
+                false,
+                true);
+    }
+
+
 }

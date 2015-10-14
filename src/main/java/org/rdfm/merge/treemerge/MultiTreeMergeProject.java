@@ -1,5 +1,6 @@
 package org.rdfm.merge.treemerge;
 
+import org.rdfm.merge.BadCommandException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.tmatesoft.svn.core.SVNException;
@@ -42,6 +43,10 @@ public class MultiTreeMergeProject {
     public void doInitialImportOfTrunk(String branchHistoryMappingName) throws SVNException {
         BranchHistoryMapping branchHistoryMapping = trunkHistoryMappings.get(branchHistoryMappingName);
         branchHistoryMapping.doInitialImportOfTrunk();
+    }
+    public void doImportOfBranch(String name) throws SVNException, BadCommandException {
+        BranchHistoryMapping branchHistoryMapping = branchHistoryMappings.get(name);
+        branchHistoryMapping.doBranchUpdate();
     }
 
     @Transient

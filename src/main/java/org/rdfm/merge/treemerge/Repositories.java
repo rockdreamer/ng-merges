@@ -5,8 +5,12 @@ import com.google.gson.GsonBuilder;
 import com.google.gson.reflect.TypeToken;
 import org.rdfm.merge.ExceptionSerializer;
 import org.rdfm.merge.FileDeSerializer;
+import org.rdfm.merge.SVNRevisionSerializer;
+import org.rdfm.merge.SVNUrlSerializer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.tmatesoft.svn.core.SVNURL;
+import org.tmatesoft.svn.core.wc.SVNRevision;
 
 import java.io.BufferedReader;
 import java.io.File;
@@ -29,6 +33,8 @@ public class Repositories implements Map<String, Repository> {
         Gson gson = new GsonBuilder()
                 .setPrettyPrinting()
                 .registerTypeHierarchyAdapter(Throwable.class, new ExceptionSerializer())
+                .registerTypeHierarchyAdapter(SVNURL.class, new SVNUrlSerializer())
+                .registerTypeHierarchyAdapter(SVNRevision.class, new SVNRevisionSerializer())
                 .registerTypeHierarchyAdapter(File.class, new FileDeSerializer())
                 .create();
         try {
